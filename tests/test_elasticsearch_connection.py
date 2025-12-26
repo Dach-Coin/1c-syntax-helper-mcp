@@ -15,6 +15,8 @@ from src.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+@pytest.mark.integration
+@pytest.mark.elasticsearch
 @pytest.mark.asyncio
 async def test_elasticsearch_connection():
     """Тест 1: Проверка подключения к Elasticsearch."""

@@ -7,6 +7,9 @@ uvicorn[standard]==0.32.0
 # Elasticsearch клиент
 elasticsearch==8.16.0
 
+# Retry механизмы
+tenacity>=8.2.3
+
 # Парсинг данных
 pydantic==2.10.2
 pydantic-settings==2.6.1

@@ -12,6 +12,9 @@ from src.core.elasticsearch import es_client
 from src.search.search_service import SearchService
 
 
+@pytest.mark.integration
+@pytest.mark.elasticsearch
+@pytest.mark.search
 @pytest.mark.asyncio
 async def test_search():
     """Тест системы поиска."""

@@ -14,6 +14,10 @@ from src.parsers.hbk_parser import HBKParser
 from src.parsers.indexer import ElasticsearchIndexer
 
 
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.elasticsearch
+@pytest.mark.indexer
 @pytest.mark.asyncio
 async def test_indexing():
     """Тест индексации документации."""

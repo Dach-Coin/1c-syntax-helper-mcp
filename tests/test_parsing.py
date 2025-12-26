@@ -11,6 +11,9 @@ from src.core.config import settings
 from src.parsers.hbk_parser import HBKParser
 
 
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parser
 @pytest.mark.asyncio
 async def test_hbk_parsing():
     """Тест парсинга .hbk файла."""
