@@ -31,9 +31,9 @@ services:
       - ./data/hbk:/app/data/hbk:ro
       - ./data/logs:/app/logs
     environment:
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - ELASTICSEARCH_HOST=elasticsearch
+      - ELASTICSEARCH_PORT=9200
       - LOG_LEVEL=INFO
-      - HBK_FILE_PATH=/app/data/hbk/1c_documentation.hbk
     restart: unless-stopped
     healthcheck:
       test: [ "CMD-SHELL", "curl -f http://localhost:8000/health || exit 1" ]

@@ -6,15 +6,16 @@ uvicorn[standard]==0.32.0
 
 # Elasticsearch клиент
 elasticsearch==8.16.0
+aiohttp>=3.13.2
 
 # Retry механизмы
 tenacity>=8.2.3
 
 # Парсинг данных
-pydantic==2.10.2
-pydantic-settings==2.6.1
+pydantic>=2.10.2
+pydantic-settings>=2.6.1
 beautifulsoup4==4.12.2
-lxml==4.9.3
+lxml>=5.0.0
 
 # HTTP клиент для внешних запросов
 httpx==0.25.2

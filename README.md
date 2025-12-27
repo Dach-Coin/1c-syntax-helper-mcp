@@ -144,7 +144,7 @@ REINDEX_ON_STARTUP=true
 
 - Docker Engine 20.0+
 - Docker Compose 2.0+
-- Python 3.11+ (для разработки)
+- Python 3.14+ (для разработки)
 
 ### Локальная разработка
 
