@@ -1,8 +1,11 @@
 FROM python:3.14-slim
 
-# Установка системных зависимостей
+# Установка системных зависимостей (включая компилятор для psutil)
 RUN apt-get update && apt-get install -y \
     curl \
+    p7zip-full \
+    build-essential \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Создание рабочей директории

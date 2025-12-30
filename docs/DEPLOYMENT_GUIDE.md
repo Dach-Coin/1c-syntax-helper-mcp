@@ -1,6 +1,6 @@
-# Инструкция по развертыванию на Windows Server
+# Инструкция по развертыванию
 
-Упрощенное руководство по развертыванию MCP-сервера синтаксис-помощника 1С на Windows Server в локальной сети.
+Руководство по развертыванию MCP-сервера синтаксис-помощника 1С на Windows Server и Linux Server (ARM64).
 
 ## 📋 Содержание
 
@@ -16,13 +16,25 @@
 
 ## 🖥️ Требования
 
-### На сервере должно быть установлено:
+### Windows Server
 - Windows Server 2019+
 - Docker Desktop
 - 4+ ГБ RAM (рекомендуется 8 ГБ)
 
+### Linux Server (ARM64)
+- Ubuntu 18.04+ / Debian 10+ / CentOS 8+ или другой Linux
+- Docker и Docker Compose установлены
+- 4+ ГБ RAM (рекомендуется 8 ГБ)
+
 ### Проверка Docker:
 ```powershell
+# Windows
+docker --version
+docker compose version
+```
+
+```bash
+# Linux
 docker --version
 docker compose version
 ```
@@ -33,30 +45,53 @@ docker compose version
 
 ### На вашей рабочей машине:
 
+#### Для серверов AMD64 (Intel/AMD)
+
 ```powershell
 # 1. Перейти в директорию проекта
-cd d:\Projects\python\help1c
+cd d:\Anton\Development\python\mcp-servers\help1c
 
-# 2. Собрать Docker образ (обратите внимание на точку в конце!)
-docker build -t help1c-mcp .
+# 2. Собрать Docker образ для AMD64
+docker build -t help1c-mcp:amd64 .
 
 # 3. Экспортировать образ в файл
-docker save help1c-mcp -o help1c-mcp.tar
+docker save help1c-mcp:amd64 -o help1c-mcp-amd64.tar
 
-# Образ сохранится в файл help1c-mcp.tar (~500 МБ)
+# Образ сохранится в файл help1c-mcp-amd64.tar (~500 МБ)
+```
+
+#### Для серверов ARM64 (ARM, Raspberry Pi 4+, Apple Silicon)
+
+```powershell
+# 1. Перейти в директорию проекта
+cd d:\Anton\Development\python\mcp-servers\help1c
+
+# 2. Собрать Docker образ для ARM64 (требует Docker Buildx)
+docker buildx build --platform linux/arm64 -t help1c-mcp:arm64 -o type=docker .
+
+# 3. Экспортировать образ в файл
+docker save help1c-mcp:arm64 -o help1c-mcp-arm64.tar
+
+# Образ сохранится в файл help1c-mcp-arm64.tar (~500 МБ)
+
+# Примечание: Если Docker Buildx не установлен, используйте:
+# docker buildx create --name multiarch
+# docker buildx use multiarch
 ```
 
 ---
 
 ## 🚀 Развертывание на сервере
 
-### Шаг 1: Копирование файлов на сервер
+### Развертывание на Windows Server (AMD64)
+
+#### Шаг 1: Копирование файлов на сервер
 
 Скопируйте на сервер в папку `C:\help1c-mcp\`:
 
 ```
 C:\help1c-mcp\
-├── help1c-mcp.tar           # Docker образ (из предыдущего шага)
+├── help1c-mcp-amd64.tar     # Docker образ для AMD64
 ├── docker-compose.yml       # Конфигурация
 └── data\
     └── hbk\
@@ -70,12 +105,12 @@ New-Item -Path "C:\help1c-mcp" -ItemType Directory
 New-Item -Path "C:\help1c-mcp\data\hbk" -ItemType Directory
 
 # Скопировать файлы
-Copy-Item "d:\Projects\python\help1c\help1c-mcp.tar" "\\SERVER\C$\help1c-mcp\"
-Copy-Item "d:\Projects\python\help1c\docker-compose.yml" "\\SERVER\C$\help1c-mcp\"
-Copy-Item "d:\Projects\python\help1c\data\hbk\*.hbk" "\\SERVER\C$\help1c-mcp\data\hbk\"
+Copy-Item "d:\Anton\Development\python\mcp-servers\help1c\help1c-mcp-amd64.tar" "\\SERVER\C$\help1c-mcp\"
+Copy-Item "d:\Anton\Development\python\mcp-servers\help1c\docker-compose.yml" "\\SERVER\C$\help1c-mcp\"
+Copy-Item "d:\Anton\Development\python\mcp-servers\help1c\data\hbk\*.hbk" "\\SERVER\C$\help1c-mcp\data\hbk\"
 ```
 
-### Шаг 2: Загрузка образа на сервере
+#### Шаг 2: Загрузка образа на сервере
 
 На сервере в PowerShell:
 
@@ -84,28 +119,113 @@ Copy-Item "d:\Projects\python\help1c\data\hbk\*.hbk" "\\SERVER\C$\help1c-mcp\dat
 cd C:\help1c-mcp
 
 # Загрузить Docker образ
-docker load -i help1c-mcp.tar
+docker load -i help1c-mcp-amd64.tar
 
 # Проверить, что образ загружен
 docker images | Select-String "help1c-mcp"
 ```
 
-### Шаг 3: Обновить docker-compose.yml
+#### Шаг 3: Обновить docker-compose.yml
 
-Замените в `C:\help1c-mcp\docker-compose.yml` строку `build: .` на `image: help1c-mcp`:
+Замените в `C:\help1c-mcp\docker-compose.yml` строку `build: .` на `image: help1c-mcp:amd64`:
 
 ```yaml
 mcp-server:
-  image: help1c-mcp          # ← Изменить эту строку (было: build: .)
+  image: help1c-mcp:amd64     # ← Изменить эту строку
   container_name: mcp-1c-helper
   ports:
     - "8000:8000"
   # ... остальное без изменений
 ```
 
-### Шаг 4: Запуск сервиса
+#### Шаг 4: Запуск сервиса
 
 ```powershell
+# Запустить контейнеры
+docker compose up -d
+
+# Проверить статус
+docker compose ps
+```
+
+---
+
+### Развертывание на Linux Server (ARM64)
+
+#### Шаг 1: Подготовка на Windows машине
+
+На вашей Windows машине соберите образ для ARM64:
+
+```powershell
+cd d:\Anton\Development\python\mcp-servers\help1c
+
+# Создать builder если еще не создан
+docker buildx create --name multiarch --use
+
+# Собрать для ARM64 и сохранить как tar
+docker buildx build --platform linux/arm64 -t help1c-mcp:arm64 -o type=docker .
+
+# Экспортировать
+docker save help1c-mcp:arm64 -o help1c-mcp-arm64.tar
+```
+
+#### Шаг 2: Копирование файлов на Linux сервер
+
+```bash
+# На Linux сервере создать директорию
+mkdir -p /opt/help1c-mcp/data/hbk
+
+# Скопировать файлы со своей машины на сервер (выполнить на Windows)
+scp help1c-mcp-arm64.tar user@server:/opt/help1c-mcp/
+scp docker-compose.yml user@server:/opt/help1c-mcp/
+scp data/hbk/*.hbk user@server:/opt/help1c-mcp/data/hbk/
+
+# Или через rsync для больших файлов
+rsync -avz help1c-mcp-arm64.tar user@server:/opt/help1c-mcp/
+rsync -avz docker-compose.yml user@server:/opt/help1c-mcp/
+rsync -avz data/hbk/ user@server:/opt/help1c-mcp/data/hbk/
+```
+
+#### Шаг 3: Загрузка образа на Linux сервере
+
+На сервере выполните:
+
+```bash
+cd /opt/help1c-mcp
+
+# Загрузить Docker образ
+docker load -i help1c-mcp-arm64.tar
+
+# Переименовать образ для удобства (опционально)
+docker tag help1c-mcp:arm64 help1c-mcp:latest
+
+# Проверить загруженный образ
+docker images | grep help1c-mcp
+```
+
+#### Шаг 4: Обновить docker-compose.yml на Linux
+
+На сервере отредактируйте `docker-compose.yml`:
+
+```bash
+# Отредактировать файл
+nano /opt/help1c-mcp/docker-compose.yml
+
+# Убедиться, что указано:
+# image: help1c-mcp:arm64  (или help1c-mcp:latest если переименовали)
+# volumes указывают на правильные пути для Linux:
+#   - ./data/hbk:/app/data/hbk
+#   - ./logs:/app/logs
+```
+
+#### Шаг 5: Запуск контейнеров на Linux
+
+```bash
+cd /opt/help1c-mcp
+
+# Создать директорию логов если ее еще нет
+mkdir -p logs
+
 # Запустить контейнеры
 docker compose up -d
 
@@ -191,7 +311,23 @@ Invoke-RestMethod http://SERVER_IP:8000/health
 
 ## 🔄 Обновление .hbk файла
 
-### Способ 1: Обновление БЕЗ перезапуска контейнера (рекомендуется)
+### На Windows Server
+
+```powershell
+# 1. Заменить файл на сервере
+Copy-Item "путь\к\новому\файлу.hbk" "C:\help1c-mcp\data\hbk\1c_documentation.hbk" -Force
+
+# 2. Запустить реиндексацию через API
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/index/rebuild"
+
+# 3. Проверить результат
+Invoke-RestMethod -Uri "http://localhost:8000/index/status"
+```
+
+**Время обновления:** ~1-5 минут  
+**Преимущества:** Контейнеры не перезагружаются, пользователи не отключаются
+
+### На Linux Server
 
 ```bash
 # 1. Заменить файл на сервере
@@ -203,51 +339,24 @@ curl -X POST http://localhost:8000/index/rebuild
 
 # 3. Проверить результат
 curl http://localhost:8000/index/status
-
-# Готово! Контейнеры продолжают работать, пользователи не отключаются
 ```
 
-**Время обновления:** ~1-5 минут в зависимости от размера файла
+**Время обновления:** ~1-5 минут  
+**Преимущества:** Контейнеры не перезагружаются, пользователи не отключаются
 
-**Преимущества:**
-- ✅ Нет простоя сервиса
-- ✅ Пользователи не теряют подключение
-- ✅ Elasticsearch данные сохраняются
-
-### Способ 2: Обновление с перезапуском (если нужна полная очистка)
-
-```bash
-# 1. Заменить файл
-cp /путь/к/новому/файлу.hbk data/hbk/1c_documentation.hbk
-
-# 2. ПерезапусБЕЗ перезапуска (рекомендуется)
+### Если нужно перезагрузить контейнер
 
 ```powershell
-# 1. Заменить файл на сервере
-Copy-Item "путь\к\новому\файлу.hbk" "C:\help1c-mcp\data\hbk\1c_documentation.hbk" -Force
-
-# 2. Запустить реиндексацию
-Invoke-RestMethod -Method Post -Uri "http://localhost:8000/index/rebuild"
-
-# 3. Проверить результат
-Invoke-RestMethod -Uri "http://localhost:8000/index/status"
-```
-
-⏱️ Время обновления: 1-5 минут  
-✅ Пользователи не отключаются
-
-### Способ 2: С перезапуском
-
-```powershell
-# 1. Заменить файл
-Copy-Item "путь\к\новому\файлу.hbk" "C:\help1c-mcp\data\hbk\1c_documentation.hbk" -Force
-
-# 2. Перезапустить контейнер
+# Windows Server
 cd C:\help1c-mcp
 docker compose restart mcp-server
+
+# Или Linux Server
+cd /opt/help1c-mcp
+docker compose restart
 ```
 
-⏱️ Простой: ~30 секунд
+**Простой:** ~30 секунд
 
 ### Автоматизация
 
@@ -320,65 +429,47 @@ sudo systemctl status help1c-mcp
 
 ## 🛠️ Устранение проблем
 
-### Проблема: Контейнеры не запускаются
+### Контейнеры не запускаются
 
-**Диагностика:**
-```bash
-docpowershell
-cd C:\help1c-mcp
+**Windows Server:**
+```powershell
+# Посмотреть логи
+docker compose logs
 
-# Запуск
+# Порты заняты? Проверить:
+netstat -ano | findstr ":8000"
+netstat -ano | findstr ":9200"
+
+# Полная переустановка
+docker compose down -v
 docker compose up -d
-
-# Остановка
-docker compose down
-
-# Перезапуск
-docker compose restart
-
-# Просмотр логов
-docker compose logs -f
-
-# Проверка статуса
-docker compose ps
 ```
 
-### Автозапуск
-
-Контейнеры автоматически запускаются при загрузке сервера (настроено в docker-compose.yml: `restart: unless-stopped`
-
-**Диагностика:**
+**Linux Server:**
 ```bash
-curl http://localhost:8000/index/status
-docker logs mcp-1c-helper -f
+# Посмотреть логи
+docker compose logs
+
+# Порты заняты? Проверить:
+netstat -tulpn | grep -E ":8000|:9200"
+
+# Полная переустановка
+docker compose down -v
+docker compose up -d
 ```
 
-**Решение:**
-```bash
-# Проверить наличие .hbk файла
-ls -lh /opt/help1c-mcp/data/hbk/
+### Нет доступа с клиентских машин
 
-# Перезапустить с принудительной реиндексацией
-docker compose restart mcp-server
+**Windows Server:**
+```powershell
+# Открыть порт в firewall
+New-NetFirewallRule -DisplayName "Help1C MCP" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow
 
-# Или вручную через API
-curl -X POST http://localhost:8000/index/rebuild
+# Проверить доступность
+Test-NetConnection -ComputerName SERVER_IP -Port 8000
 ```
 
-### Проблема: Нет доступа с клиентских машин
-
-**Диагностика:**
-```bash
-# На сервере проверить, слушает ли порт
-sudo netstat -tulpn | grep 8000
-
-# С клиента проверить доступность
-telnet SERVER_IP 8000
-# или
-curl http://SERVER_IP:8000/health
-```
-
-**Решение 1: Проверить firewall (Linux):**
+**Linux Server:**
 ```bash
 # Ubuntu/Debian
 sudo ufw allow 8000/tcp
@@ -389,60 +480,73 @@ sudo firewall-cmd --permanent --add-port=8000/tcp
 sudo firewall-cmd --reload
 ```
 
-**Решение 2: Проверить firewall (Windows Server):**
-```powershell
-New-NetFirewallRule -DisplayName "Help1C MCP Server" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow
-```
-
-### Проблема: Медленная работа поиска
-
-**Д✅ Типичные проблемы
-
-### Контейнеры не запускаются
-
-```powershell
-# Посмотреть логи
-docker compose logs
-
-# Порты заняты? Проверить:
-netstat -ano | findstr ":8000"
-netstat -ano | findstr ":9200"
-```
-
-### Нет доступа с клиентских машин
-
-```powershell
-# Открыть порт в firewall
-New-NetFirewallRule -DisplayName "Help1C MCP" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow
-
-# Проверить доступность
-Test-NetConnection -ComputerName SERVER_IP -Port 8000
-```
-
 ### Индексация не работает
 
+**Windows Server:**
 ```powershell
 # Проверить наличие файла
 dir C:\help1c-mcp\data\hbk\
 
+# Посмотреть логи контейнера
+docker compose logs mcp-server
+
 # Перезапустить реиндексацию
 Invoke-RestMethod -Method Post -Uri "http://localhost:8000/index/rebuild"
+```
+
+**Linux Server:**
+```bash
+# Проверить наличие файла
+ls -lh /opt/help1c-mcp/data/hbk/
+
+# Посмотреть логи контейнера
+docker compose logs mcp-server
+
+# Перезапустить реиндексацию
+curl -X POST http://localhost:8000/index/rebuild
+```
+
+### Проверить статус здоровья сервиса
+
+**Windows Server:**
+```powershell
+Invoke-RestMethod http://localhost:8000/health
+```
+
+**Linux Server:**
+```bash
+curl http://localhost:8000/health
 ```
 
 ---
 
 ## ✅ Чек-лист развертывания
 
+### Windows Server
 - [ ] Docker Desktop установлен и запущен
-- [ ] Образ загружен: `docker images | Select-String "help1c-mcp"`
+- [ ] Образ `help1c-mcp:amd64` собран
+- [ ] Файл `help1c-mcp-amd64.tar` создан
 - [ ] Файлы скопированы в `C:\help1c-mcp\`
 - [ ] .hbk файл на месте: `C:\help1c-mcp\data\hbk\1c_documentation.hbk`
+- [ ] `docker-compose.yml` обновлен (image: help1c-mcp:amd64)
 - [ ] Контейнеры запущены: `docker compose ps`
 - [ ] Health check работает: `Invoke-RestMethod http://localhost:8000/health`
 - [ ] Порт 8000 открыт в firewall
-- [ ] Клиенты могут подключиться с других машин
+- [ ] Клиенты могут подключиться: `Invoke-RestMethod http://SERVER_IP:8000/health`
+
+### Linux Server (ARM64)
+- [ ] Образ `help1c-mcp:arm64` собран на Windows
+- [ ] Файл `help1c-mcp-arm64.tar` создан
+- [ ] Файлы скопированы в `/opt/help1c-mcp/`
+- [ ] .hbk файл на месте: `/opt/help1c-mcp/data/hbk/1c_documentation.hbk`
+- [ ] `docker-compose.yml` обновлен (image: help1c-mcp:arm64)
+- [ ] Образ загружен: `docker images | grep help1c-mcp`
+- [ ] Контейнеры запущены: `docker compose ps`
+- [ ] Health check работает: `curl http://localhost:8000/health`
+- [ ] Порт 8000 открыт в firewall (`ufw allow 8000/tcp`)
+- [ ] Клиенты могут подключиться: `curl http://SERVER_IP:8000/health`
 
 ---
 
-**Дата:** 27.12.2025  
-**Версия:** 2
+**Дата:** 29.12.2025  
+**Версия:** 3
