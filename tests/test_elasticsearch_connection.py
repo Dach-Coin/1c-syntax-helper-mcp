@@ -15,12 +15,13 @@ from src.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-@pytest.mark.integration
-@pytest.mark.elasticsearch
 @pytest.mark.asyncio
 async def test_elasticsearch_connection():
     """Тест 1: Проверка подключения к Elasticsearch."""
     print("=== Тест 1: Подключение к Elasticsearch ===")
+    
+    # Получаем URL из настроек
+    es_url = settings.elasticsearch.url
     
     try:
         connected = await es_client.connect()
@@ -36,11 +37,13 @@ async def test_elasticsearch_connection():
             return True
         else:
             print("❌ Не удалось подключиться к Elasticsearch")
-            print("Убедитесь что Elasticsearch запущен на localhost:9200")
+            print(f"Убедитесь что Elasticsearch запущен на {es_url}")
+            print("Подсказка: проверьте переменную окружения ELASTICSEARCH_HOST")
             return False
             
     except Exception as e:
         print(f"❌ Ошибка подключения: {e}")
+        print(f"URL: {es_url}")
         return False
     finally:
         await es_client.disconnect()

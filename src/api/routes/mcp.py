@@ -150,21 +150,33 @@ async def get_mcp_tools():
 async def mcp_sse_endpoint():
     """MCP Server-Sent Events endpoint для потокового соединения."""
     async def event_stream():
-        # Отправляем начальное событие подключения
-        yield f"data: {json.dumps({'type': 'connection', 'status': 'connected'})}\n\n"
+        # Отправляем JSON-RPC endpoint message
+        endpoint_message = {
+            "jsonrpc": "2.0",
+            "method": "endpoint",
+            "params": {
+                "uri": "http://localhost:8000/mcp",
+                "transport": {
+                    "type": "http",
+                    "requestType": "post"
+                }
+            }
+        }
+        yield f"data: {json.dumps(endpoint_message)}\n\n"
         
         # Поддерживаем соединение живым
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(30)
             yield f"data: {json.dumps({'type': 'ping', 'timestamp': int(time.time())})}\n\n"
     
     return StreamingResponse(
-        event_stream(), 
+        event_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*"
+            "Access-Control-Allow-Origin": "*",
+            "X-Accel-Buffering": "no"
         }
     )
 
@@ -179,8 +191,13 @@ async def mcp_jsonrpc_endpoint(
         body = await request.body()
         data = json.loads(body.decode('utf-8'))
         
+        # Логируем входящий запрос для диагностики
+        logger.debug(f"MCP JSON-RPC запрос получен: {data}")
+        
         # Проверяем JSON-RPC формат
-        if data.get("jsonrpc") != "2.0":
+        jsonrpc_version = data.get("jsonrpc")
+        if jsonrpc_version is None or jsonrpc_version != "2.0":
+            logger.warning(f"Некорректная версия JSON-RPC: {jsonrpc_version}")
             return JSONResponse(
                 status_code=400,
                 content={"error": {"code": -32600, "message": "Invalid Request"}}
@@ -189,6 +206,17 @@ async def mcp_jsonrpc_endpoint(
         method = data.get("method")
         params = data.get("params", {})
         request_id = data.get("id")
+        
+        # Проверяем обязательное поле id для обычных запросов (не notifications)
+        if method and not method.startswith("notifications/") and request_id is None:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request: Missing required 'id' field"}
+                }
+            )
         
         # Обрабатываем initialize запрос
         if method == "initialize":
@@ -249,9 +277,30 @@ async def mcp_jsonrpc_endpoint(
                 }
             })
         
+        # Обрабатываем resources/list запрос
+        elif method == "resources/list":
+            return JSONResponse(content={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "resources": []
+                }
+            })
+        
+        # Обрабатываем resources/templates/list запрос
+        elif method == "resources/templates/list":
+            return JSONResponse(content={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "resources": []
+                }
+            })
+        
         # Обрабатываем notifications/initialized (без ответа)
         elif method == "notifications/initialized":
-            return JSONResponse(content={"status": "ok"})
+            # Notifications не должны возвращать ответ с id
+            return JSONResponse(content={})
         
         # Обрабатываем tools/call запрос
         elif method == "tools/call":
@@ -294,7 +343,7 @@ async def mcp_jsonrpc_endpoint(
             status_code=500,
             content={
                 "jsonrpc": "2.0",
-                "id": request_id if 'request_id' in locals() else None,
+                "id": request_id if 'request_id' in locals() and request_id is not None else None,
                 "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
             }
         )

@@ -43,7 +43,8 @@ class BackgroundIndexingManager:
     async def start_indexing(
         self, 
         file_path: str, 
-        es_client: ElasticsearchClient
+        es_client: ElasticsearchClient,
+        clear_index: bool = True
     ) -> None:
         """
         Запустить индексацию в фоновом режиме.
@@ -53,6 +54,8 @@ class BackgroundIndexingManager:
         Args:
             file_path: Путь к .hbk файлу
             es_client: Клиент Elasticsearch
+            clear_index: Если True - удаляет старый индекс перед индексацией.
+                        Если False - добавляет документы к существующему индексу.
         """
         if self.is_indexing():
             logger.warning("Индексация уже выполняется, пропускаем запрос")
@@ -62,13 +65,14 @@ class BackgroundIndexingManager:
         
         # Создаём фоновую задачу
         self._current_task = asyncio.create_task(
-            self._do_indexing(file_path, es_client)
+            self._do_indexing(file_path, es_client, clear_index)
         )
     
     async def _do_indexing(
         self, 
         file_path: str, 
-        es_client: ElasticsearchClient
+        es_client: ElasticsearchClient,
+        clear_index: bool = True
     ):
         """
         Выполнить индексацию (внутренний метод).
@@ -76,6 +80,7 @@ class BackgroundIndexingManager:
         Args:
             file_path: Путь к .hbk файлу
             es_client: Клиент Elasticsearch
+            clear_index: Если True - удаляет старый индекс перед индексацией.
         """
         try:
             # Устанавливаем статус IN_PROGRESS
@@ -104,8 +109,18 @@ class BackgroundIndexingManager:
                 file_path
             )
             
-            if not parsed_hbk or not parsed_hbk.documentation:
-                raise ValueError("Не удалось распарсить файл или документация пуста")
+            if not parsed_hbk:
+                raise ValueError("Не удалось распарсить файл")
+            
+            # Если документация пуста - это нормально (UI файлы, служебные HBK)
+            if not parsed_hbk.documentation:
+                logger.info(f"Файл не содержит HTML документации, пропускаем: {file_path}")
+                async with self._lock:
+                    self._progress_info.status = IndexingStatus.COMPLETED
+                    self._progress_info.end_time = datetime.now()
+                    self._progress_info.total_documents = 0
+                    self._progress_info.indexed_documents = 0
+                return
             
             total = len(parsed_hbk.documentation)
             logger.info(f"Найдено {total} документов для индексации")
@@ -120,7 +135,8 @@ class BackgroundIndexingManager:
             
             success = await indexer.reindex_all(
                 parsed_hbk,
-                progress_callback=self._update_progress
+                progress_callback=self._update_progress,
+                clear_index=clear_index
             )
             
             if not success:

@@ -26,6 +26,18 @@
   }
 }
 
+# Kilo Code / Roo Code
+{
+    "mcpServers": {
+        "1c-syntax-helper": {
+            "type": "streamable-http",
+            "url": "http://localhost:8000/mcp",
+            "disabled": false,
+            "alwaysAllow": []
+        }
+    }
+}
+
 # Альтернативная конфигурация для Claude Desktop:
 # Добавьте в файл claude_desktop_config.json:
 {

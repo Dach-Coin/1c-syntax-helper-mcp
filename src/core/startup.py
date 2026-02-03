@@ -15,7 +15,7 @@ async def auto_index_on_startup(es_client: ElasticsearchClient):
     """
     Автоматическая индексация в фоновом режиме при запуске.
     
-    Проверяет наличие .hbk файла и запускает фоновую индексацию.
+    Проверяет наличие .hbk файлов и запускает фоновую индексацию.
     Поведение зависит от настроек:
     - force_reindex=True или reindex_on_startup=true: всегда индексирует
     - Иначе: индексирует только если индекс пуст или не существует
@@ -24,12 +24,21 @@ async def auto_index_on_startup(es_client: ElasticsearchClient):
         es_client: Подключённый клиент Elasticsearch
     """
     try:
-        # Определяем путь к единственному .hbk файлу
-        hbk_file = Path(settings.data.hbk_directory) / "shcntx_ru.hbk"
+        # Определяем путь к каталогу с .hbk файлами
+        hbk_directory = Path(settings.data.hbk_directory)
         
-        if not hbk_file.exists():
-            logger.warning(f"Файл .hbk не найден: {hbk_file}")
+        if not hbk_directory.exists():
+            logger.warning(f"Каталог .hbk файлов не найден: {hbk_directory}")
             return
+        
+        # Находим все .hbk файлы в каталоге
+        hbk_files = list(hbk_directory.glob("*.hbk"))
+        
+        if not hbk_files:
+            logger.warning(f"В каталоге {hbk_directory} не найдено .hbk файлов")
+            return
+        
+        logger.info(f"Найдено {len(hbk_files)} .hbk файлов для индексации")
         
         # Проверяем, нужна ли принудительная переиндексация
         force_reindex = settings.should_reindex_on_startup
@@ -46,31 +55,41 @@ async def auto_index_on_startup(es_client: ElasticsearchClient):
             logger.info("Принудительная переиндексация при запуске (reindex_on_startup=true или --reindex)")
         
         # Запускаем фоновую индексацию с задержкой
-        logger.info(f"Запланирована фоновая индексация файла: {hbk_file}")
-        asyncio.create_task(_delayed_background_indexing(str(hbk_file), es_client))
+        logger.info(f"Запланирована фоновая индексация {len(hbk_files)} файлов")
+        asyncio.create_task(_delayed_background_indexing(hbk_files, es_client))
         
     except Exception as e:
         logger.error(f"Ошибка при планировании автоиндексации: {e}")
 
 
-async def _delayed_background_indexing(file_path: str, es_client: ElasticsearchClient):
+async def _delayed_background_indexing(hbk_files: list[Path], es_client: ElasticsearchClient):
     """
     Отложенная фоновая индексация.
     
     Даёт приложению время на полный запуск перед началом индексации.
     
     Args:
-        file_path: Путь к .hbk файлу
+        hbk_files: Список путей к .hbk файлам
         es_client: Клиент Elasticsearch
     """
     # Даём приложению 5 секунд на полный запуск
     await asyncio.sleep(5)
     
-    logger.info("Начинаем фоновую индексацию...")
+    logger.info(f"Начинаем фоновую индексацию {len(hbk_files)} файлов...")
     
     try:
         manager = get_indexing_manager()
-        await manager.start_indexing(file_path=file_path, es_client=es_client)
+        
+        for i, hbk_file in enumerate(hbk_files, 1):
+            # Удаляем индекс только перед первым файлом
+            clear_index = (i == 1)
+            logger.info(f"Индексация файла {i}/{len(hbk_files)}: {hbk_file.name} (clear_index={clear_index})")
+            await manager.start_indexing(file_path=str(hbk_file), es_client=es_client, clear_index=clear_index)
+            
+            # Ждём завершения индексации текущего файла перед переходом к следующему
+            while manager.is_indexing():
+                await asyncio.sleep(1)
+                
     except Exception as e:
         logger.error(f"Ошибка при запуске фоновой индексации: {e}")
 
@@ -102,9 +121,10 @@ async def index_hbk_file(file_path: str, es_client: ElasticsearchClient) -> bool
             logger.error("Ошибка парсинга .hbk файла")
             return False
         
+        # Если документация пуста - это нормально (UI файлы, служебные HBK)
         if not parsed_hbk.documentation:
-            logger.warning("В файле не найдена документация для индексации")
-            return False
+            logger.info(f"Файл не содержит HTML документации, пропускаем: {file_path}")
+            return True  # Успешно обработан, просто нечего индексировать
         
         logger.info(f"Найдено {len(parsed_hbk.documentation)} документов для индексации")
         

@@ -1,25 +1,29 @@
 
-"""Парсер .hbk файлов (архивы документации 1С)."""
+"""Парсер .hbk файлов (архивы документации 1С).
+
+HBK файлы - это ZIP архивы с заголовком 1С.
+Используется встроенный модуль zipfile для кроссплатформенной работы.
+"""
 
 import os
-import tempfile
 import re
+import zipfile
+import io
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from src.models.doc_models import HBKFile, HBKEntry, ParsedHBK, CategoryInfo
 from src.core.logging import get_logger
 from src.parsers.html_parser import HTMLParser
-from src.core.utils import (
-    safe_subprocess_run, 
-    SafeSubprocessError, 
-    create_safe_temp_dir, 
-    safe_remove_dir,
-    validate_file_path
-)
+from src.core.utils import SafeSubprocessError, validate_file_path
 from src.core.constants import MAX_FILE_SIZE_MB, SUPPORTED_ENCODINGS, BATCH_SIZE
 
 logger = get_logger(__name__)
+
+# ZIP сигнатуры
+ZIP_SIGNATURE = b'PK'  # Начало ZIP (Local File Header)
+ZIP_EOCD_SIGNATURE = b'PK\x05\x06'  # End of Central Directory
+ZIP_EOCD_MIN_SIZE = 22  # Минимальный размер EOCD записи
 
 
 class HBKParserError(Exception):
@@ -28,12 +32,17 @@ class HBKParserError(Exception):
 
 
 class HBKParser:
-    """Парсер .hbk архивов с документацией 1С."""
+    """Парсер .hbk архивов с документацией 1С.
+    
+    HBK файлы содержат ZIP архив со смещением (заголовок 1С в начале файла).
+    Для работы используется встроенный модуль zipfile Python.
+    """
     
     def __init__(self, max_files_per_type: Optional[int] = None, max_total_files: Optional[int] = None):
         self.supported_extensions = ['.hbk', '.zip', '.7z']
-        self._zip_command = None
-        self._archive_path = None
+        self._zip_file: Optional[zipfile.ZipFile] = None
+        self._archive_data: Optional[bytes] = None
+        self._archive_path: Optional[Path] = None
         self._max_file_size = MAX_FILE_SIZE_MB * 1024 * 1024  # MB в байты
         self.html_parser = HTMLParser()  # Инициализируем HTML парсер
         
@@ -86,17 +95,200 @@ class HBKParser:
             return result
     
     def _extract_archive(self, file_path: Path) -> List[HBKEntry]:
-        """Извлекает содержимое архива через внешний 7zip."""
+        """Извлекает список файлов из HBK архива.
+        
+        HBK файлы содержат ZIP архив со смещением.
+        Находим ZIP сигнатуру и открываем как обычный ZIP.
+        """
         try:
-            entries = self._extract_external_7z(file_path)
+            entries = self._open_hbk_as_zip(file_path)
             if entries:
                 return entries
             else:
                 logger.error(f"Не удалось извлечь файлы из архива: {file_path}")
                 return []
         except Exception as e:
-            logger.error(f"Ошибка обработки архива через 7zip: {e}")
+            logger.error(f"Ошибка обработки архива: {e}")
             return []
+    
+    def _find_zip_offset(self, data: bytes) -> int:
+        """Находит смещение ZIP сигнатуры в данных.
+        
+        Args:
+            data: Байты файла
+            
+        Returns:
+            Смещение ZIP сигнатуры или -1 если не найдена
+        """
+        return data.find(ZIP_SIGNATURE)
+    
+    def _find_zip_end(self, data: bytes, zip_start: int) -> int:
+        """Находит конец ZIP архива (после EOCD записи).
+        
+        HBK файлы могут содержать дополнительные данные после ZIP архива.
+        Нужно найти End of Central Directory (EOCD) и вычислить конец архива.
+        
+        Args:
+            data: Байты файла
+            zip_start: Начало ZIP данных
+            
+        Returns:
+            Позиция конца ZIP архива
+        """
+        # Ищем EOCD сигнатуру с конца файла (она может быть не в самом конце из-за хвоста)
+        # EOCD может иметь комментарий до 65535 байт
+        max_comment_size = 65535
+        search_start = max(zip_start, len(data) - ZIP_EOCD_MIN_SIZE - max_comment_size)
+        
+        # Ищем последнее вхождение EOCD сигнатуры
+        eocd_pos = data.rfind(ZIP_EOCD_SIGNATURE, search_start)
+        
+        if eocd_pos < 0:
+            # EOCD не найден, возвращаем весь файл
+            logger.warning("EOCD сигнатура не найдена, используем весь файл")
+            return len(data)
+        
+        # EOCD структура:
+        # 4 bytes: signature (PK\x05\x06)
+        # 2 bytes: disk number
+        # 2 bytes: disk with central directory
+        # 2 bytes: entries on this disk
+        # 2 bytes: total entries
+        # 4 bytes: central directory size
+        # 4 bytes: central directory offset
+        # 2 bytes: comment length
+        # n bytes: comment
+        
+        # Читаем длину комментария (последние 2 байта перед комментарием)
+        comment_length_pos = eocd_pos + 20
+        if comment_length_pos + 2 <= len(data):
+            comment_length = int.from_bytes(data[comment_length_pos:comment_length_pos + 2], 'little')
+            zip_end = eocd_pos + ZIP_EOCD_MIN_SIZE + comment_length
+            logger.debug(f"EOCD найден на позиции {eocd_pos}, комментарий {comment_length} байт, конец ZIP: {zip_end}")
+            return zip_end
+        
+        # Если не удалось прочитать длину комментария, используем минимальный размер
+        return eocd_pos + ZIP_EOCD_MIN_SIZE
+    
+    def _open_hbk_as_zip(self, file_path: Path) -> List[HBKEntry]:
+        """Открывает HBK файл как ZIP архив.
+        
+        HBK файлы содержат:
+        1. Заголовок 1С (до ZIP сигнатуры)
+        2. ZIP архив
+        3. Дополнительные данные 1С после ZIP архива (хвост)
+        
+        Нужно извлечь только ZIP часть для корректного парсинга.
+        
+        Args:
+            file_path: Путь к HBK файлу
+            
+        Returns:
+            Список записей архива
+        """
+        entries = []
+        
+        # Читаем весь файл
+        with open(file_path, 'rb') as f:
+            self._archive_data = f.read()
+        
+        # Находим начало ZIP
+        zip_start = self._find_zip_offset(self._archive_data)
+        if zip_start < 0:
+            raise HBKParserError(f"ZIP сигнатура не найдена в файле: {file_path}")
+        
+        logger.debug(f"ZIP начало: {zip_start}")
+        
+        # Пробуем разные варианты открытия ZIP
+        zip_file = self._try_open_zip(zip_start)
+        
+        if not zip_file:
+            raise HBKParserError(f"Не удалось открыть ZIP архив в файле: {file_path}")
+        
+        self._zip_file = zip_file
+        self._archive_path = file_path
+        
+        # Получаем список файлов
+        for info in self._zip_file.infolist():
+            entry = HBKEntry(
+                path=info.filename,
+                size=info.file_size,
+                is_dir=info.is_dir(),
+                content=None  # Содержимое загружается по требованию
+            )
+            entries.append(entry)
+        
+        logger.info(f"Архив открыт успешно. Файлов: {len(entries)}")
+        
+        return entries
+    
+    def _try_open_zip(self, zip_start: int) -> Optional[zipfile.ZipFile]:
+        """Пробует открыть ZIP архив разными способами.
+        
+        Args:
+            zip_start: Начало ZIP данных
+            
+        Returns:
+            ZipFile объект или None
+        """
+        # Способ 1: Пробуем найти конец ZIP через EOCD
+        zip_end = self._find_zip_end(self._archive_data, zip_start)
+        logger.debug(f"Попытка 1: ZIP данные [{zip_start}:{zip_end}], размер={zip_end - zip_start}")
+        
+        zip_data = io.BytesIO(self._archive_data[zip_start:zip_end])
+        try:
+            return zipfile.ZipFile(zip_data, 'r')
+        except zipfile.BadZipFile as e:
+            logger.debug(f"Попытка 1 не удалась: {e}")
+        
+        # Способ 2: Пробуем весь файл от ZIP начала
+        logger.debug(f"Попытка 2: ZIP данные [{zip_start}:конец файла]")
+        zip_data = io.BytesIO(self._archive_data[zip_start:])
+        try:
+            return zipfile.ZipFile(zip_data, 'r')
+        except zipfile.BadZipFile as e:
+            logger.debug(f"Попытка 2 не удалась: {e}")
+        
+        # Способ 3: Ищем все EOCD и пробуем каждый
+        eocd_positions = self._find_all_eocd(self._archive_data, zip_start)
+        logger.debug(f"Найдено EOCD позиций: {len(eocd_positions)}")
+        
+        for i, eocd_pos in enumerate(eocd_positions):
+            comment_len_pos = eocd_pos + 20
+            if comment_len_pos + 2 <= len(self._archive_data):
+                comment_len = int.from_bytes(
+                    self._archive_data[comment_len_pos:comment_len_pos + 2], 'little'
+                )
+                zip_end = eocd_pos + ZIP_EOCD_MIN_SIZE + comment_len
+                
+                logger.debug(f"Попытка 3.{i}: EOCD на {eocd_pos}, zip_end={zip_end}")
+                zip_data = io.BytesIO(self._archive_data[zip_start:zip_end])
+                try:
+                    return zipfile.ZipFile(zip_data, 'r')
+                except zipfile.BadZipFile as e:
+                    logger.debug(f"Попытка 3.{i} не удалась: {e}")
+        
+        return None
+    
+    def _find_all_eocd(self, data: bytes, start: int) -> List[int]:
+        """Находит все позиции EOCD сигнатур.
+        
+        Args:
+            data: Байты файла
+            start: Начало поиска
+            
+        Returns:
+            Список позиций EOCD
+        """
+        positions = []
+        pos = start
+        while True:
+            pos = data.find(ZIP_EOCD_SIGNATURE, pos)
+            if pos < 0:
+                break
+            positions.append(pos)
+            pos += 1
+        return positions
     
     def _analyze_structure(self, entries: List[HBKEntry], result: ParsedHBK):
         """Анализирует структуру архива и извлекает документацию."""
@@ -253,134 +445,32 @@ class HBKParser:
         except Exception as e:
             logger.warning(f"Ошибка парсинга файла категорий {entry.path}: {e}")
     
-    def _extract_external_7z(self, file_path: Path) -> List[HBKEntry]:
-        """Извлекает список файлов из архива через внешний 7zip."""
-        entries = []
-        
-        # Ищем доступный 7zip - сначала в PATH, затем в стандартных местах
-        zip_commands = [
-            '7z',           # В PATH
-            '7z.exe',       # В PATH  
-            '7za',          # В PATH (standalone версия)
-            '7za.exe',      # В PATH (standalone версия)
-            # Стандартные пути Windows
-            'C:\\Program Files\\7-Zip\\7z.exe',
-            'C:\\Program Files (x86)\\7-Zip\\7z.exe',
-            # Переносная версия
-            '7-Zip\\7z.exe',
-            '7zip\\7z.exe'
-        ]
-        working_7z = None
-        
-        for cmd in zip_commands:
-            try:
-                logger.debug(f"Проверяем команду: {cmd}")
-                result = safe_subprocess_run([cmd], timeout=5)
-                # 7zip возвращает код 0 при показе help или содержит информацию о версии
-                if result.returncode == 0 or 'Igor Pavlov' in result.stdout or '7-Zip' in result.stdout:
-                    working_7z = cmd
-                    break
-            except SafeSubprocessError as e:
-                logger.debug(f"Команда {cmd} не найдена: {e}")
-                continue
-        
-        if not working_7z:
-            logger.error("7zip не найден в системе. Проверьте установку 7-Zip")
-            raise HBKParserError("7zip не найден в системе. Проверьте установку 7-Zip")
-        
-        # Получаем список файлов (без извлечения)
-        try:
-            result = safe_subprocess_run([working_7z, 'l', str(file_path)], timeout=60)
-        except SafeSubprocessError as e:
-            logger.error(f"Ошибка выполнения команды 7zip: {e}")
-            raise HBKParserError(f"Ошибка чтения архива: {e}")
-        
-        if result.returncode != 0:
-            logger.error(f"7zip вернул код ошибки {result.returncode}: {result.stderr}")
-            raise HBKParserError(f"Ошибка чтения архива: {result.stderr}")
-        
-        logger.debug(f"Вывод 7zip: {result.stdout[:500]}...")  # Первые 500 символов для отладки
-        
-        # Парсим вывод 7zip
-        lines = result.stdout.split('\n')
-        in_files_section = False
-        
-        for line in lines:
-            if '---------------' in line:
-                in_files_section = not in_files_section
-                continue
-            
-            if in_files_section and line.strip():
-                # Парсим строку файла: дата время атрибуты размер сжатый_размер имя
-                parts = line.split()
-                if len(parts) >= 6:
-                    filename = ' '.join(parts[5:])
-                    if filename and not filename.startswith('Date'):
-                        # Определяем размер и тип
-                        try:
-                            size = int(parts[3]) if parts[3].isdigit() else 0
-                        except (ValueError, IndexError):
-                            size = 0
-                        
-                        is_dir = parts[2] == 'D' if len(parts) > 2 and len(parts[2]) == 1 else False
-                        
-                        entry = HBKEntry(
-                            path=filename,
-                            size=size,
-                            is_dir=is_dir,
-                            content=None  # Не извлекаем содержимое сразу
-                        )
-                        
-                        entries.append(entry)
-        
-        # Сохраняем команду 7zip для дальнейшего использования
-        self._zip_command = working_7z
-        self._archive_path = file_path
-        
-        return entries
     
     def extract_file_content(self, filename: str) -> Optional[bytes]:
-        """Извлекает содержимое конкретного файла по требованию."""
-        if not self._zip_command or not self._archive_path:
+        """Извлекает содержимое конкретного файла из архива.
+        
+        Args:
+            filename: Имя файла в архиве
+            
+        Returns:
+            Байты содержимого файла или None при ошибке
+        """
+        if not self._zip_file:
             logger.error("Архив не был проинициализирован")
             return None
         
         try:
-            return self._extract_single_file(self._archive_path, filename, self._zip_command)
+            return self._zip_file.read(filename)
+        except KeyError:
+            logger.warning(f"Файл не найден в архиве: {filename}")
+            return None
         except Exception as e:
             logger.error(f"Ошибка извлечения файла {filename}: {e}")
             return None
     
-    def _extract_single_file(self, archive_path: Path, filename: str, zip_cmd: str) -> Optional[bytes]:
-        """Извлекает один файл из архива."""
-        temp_dir = create_safe_temp_dir("hbk_extract_")
-        
-        try:
-            # Безопасное извлечение файла
-            result = safe_subprocess_run([
-                zip_cmd, 'e', str(archive_path), filename, 
-                f'-o{temp_dir}', '-y'
-            ], timeout=30)
-            
-            if result.returncode == 0:
-                # Ищем извлеченный файл
-                extracted_files = list(temp_dir.rglob("*"))
-                for extracted_file in extracted_files:
-                    if extracted_file.is_file():
-                        with open(extracted_file, 'rb') as f:
-                            return f.read()
-            
-            return None
-            
-        except SafeSubprocessError as e:
-            logger.error(f"Ошибка извлечения файла {filename}: {e}")
-            return None
-        finally:
-            safe_remove_dir(temp_dir)
-    
     def extract_batch_files(self, filenames: List[str]) -> Dict[str, bytes]:
         """
-        Извлекает несколько файлов из архива за одну операцию.
+        Извлекает несколько файлов из архива.
         
         Args:
             filenames: Список имен файлов для извлечения
@@ -388,54 +478,23 @@ class HBKParser:
         Returns:
             Словарь {filename: content} с содержимым извлеченных файлов
         """
-        if not self._zip_command or not self._archive_path:
+        if not self._zip_file:
             logger.error("Архив не был проинициализирован")
             return {}
         
         if not filenames:
             return {}
         
-        temp_dir = create_safe_temp_dir("hbk_batch_extract_")
         extracted_files = {}
         
-        try:
-            # Подготавливаем команду для извлечения всех файлов
-            cmd = [self._zip_command, 'x', str(self._archive_path), f'-o{temp_dir}', '-y']
-            cmd.extend(filenames)
-            
-            # Извлекаем все файлы одной командой
-            result = safe_subprocess_run(cmd, timeout=120)
-            
-            if result.returncode == 0:
-                # Читаем все извлеченные файлы
-                for root, dirs, files in os.walk(temp_dir):
-                    for file in files:
-                        file_path = Path(root) / file
-                        # Вычисляем относительный путь от temp_dir
-                        try:
-                            relative_path = file_path.relative_to(temp_dir)
-                            # Нормализуем путь (заменяем / на \)
-                            normalized_path = str(relative_path).replace('/', '\\')
-                            
-                            # Ищем соответствие в списке запрошенных файлов
-                            for original_filename in filenames:
-                                # Нормализуем оригинальное имя
-                                normalized_original = original_filename.replace('/', '\\')
-                                if normalized_path == normalized_original:
-                                    with open(file_path, 'rb') as f:
-                                        extracted_files[original_filename] = f.read()
-                                    break
-                        except Exception as e:
-                            logger.warning(f"Ошибка чтения файла {file_path}: {e}")
-            else:
-                logger.error(f"7zip вернул код ошибки {result.returncode}")
-        
-        except SafeSubprocessError as e:
-            logger.error(f"Ошибка батчевого извлечения: {e}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при батчевом извлечении: {e}")
-        finally:
-            safe_remove_dir(temp_dir)
+        for filename in filenames:
+            try:
+                content = self._zip_file.read(filename)
+                extracted_files[filename] = content
+            except KeyError:
+                logger.warning(f"Файл не найден в архиве: {filename}")
+            except Exception as e:
+                logger.warning(f"Ошибка извлечения файла {filename}: {e}")
         
         return extracted_files
     
@@ -485,17 +544,10 @@ class HBKParser:
         )
         
         try:
-            # Определяем команду для 7zip
-            zip_cmd = self._get_7zip_command()
-            if not zip_cmd:
-                result.errors.append("7zip не найден")
-                return result
+            # Открываем архив
+            self._open_hbk_as_zip(archive_path)
             
-            # Сохраняем параметры для использования в extract_file_content
-            self._zip_command = zip_cmd
-            self._archive_path = archive_path
-            
-            logger.info(f"Извлекаение одного файла: {target_file_path}")
+            logger.info(f"Извлечение одного файла: {target_file_path}")
             
             # Извлекаем содержимое конкретного файла
             content = self.extract_file_content(target_file_path)
@@ -533,3 +585,23 @@ class HBKParser:
             logger.error(f"Ошибка извлечения файла {target_file_path} из {archive_path}: {e}")
             result.errors.append(f"Ошибка извлечения: {str(e)}")
             return result
+    
+    def close(self):
+        """Закрывает открытый архив и освобождает ресурсы."""
+        if self._zip_file:
+            try:
+                self._zip_file.close()
+            except Exception:
+                pass
+            self._zip_file = None
+        self._archive_data = None
+        self._archive_path = None
+    
+    def __enter__(self):
+        """Поддержка контекстного менеджера."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Автоматическое закрытие при выходе из контекста."""
+        self.close()
+        return False

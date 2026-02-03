@@ -3,6 +3,8 @@
 """
 
 # Elasticsearch настройки
+# По умолчанию localhost - для локальной разработки
+# В Docker переопределяется через переменную окружения ELASTICSEARCH_HOST
 ELASTICSEARCH_DEFAULT_HOST = "localhost"
 ELASTICSEARCH_DEFAULT_PORT = 9200
 ELASTICSEARCH_INDEX_NAME = "help1c_docs"

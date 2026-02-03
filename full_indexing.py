@@ -33,11 +33,11 @@ class StreamingIndexer:
         
     def _initialize_extractor(self, archive_path: Path):
         """Инициализирует параметры для извлечения файлов и возвращает список файлов."""
-        # Просто вызываем метод парсера который уже инициализирует _zip_command и _archive_path
-        all_entries = self.parser._extract_external_7z(archive_path)
+        # Открываем HBK архив через zipfile
+        all_entries = self.parser._open_hbk_as_zip(archive_path)
         
-        if not self.parser._zip_command:
-            raise Exception("Не удалось инициализировать 7zip")
+        if not self.parser._zip_file:
+            raise Exception("Не удалось открыть архив")
             
         return all_entries
         
@@ -47,55 +47,10 @@ class StreamingIndexer:
             yield lst[i:i + chunk_size]
     
     def _extract_files_batch(self, archive_path: Path, file_entries: List[HBKEntry]) -> dict:
-        """Извлекает пакет файлов из архива через временный файл-список."""
-        from src.core.utils import safe_subprocess_run, create_safe_temp_dir, safe_remove_dir
-        import tempfile
-        
-        temp_dir = create_safe_temp_dir("batch_extract_")
-        extracted_contents = {}
-        
-        try:
-            # Создаем временный файл со списком файлов для извлечения
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as list_file:
-                for entry in file_entries:
-                    list_file.write(f"{entry.path}\n")
-                list_file_path = list_file.name
-            
-            try:
-                # Извлекаем файлы используя файл-список
-                cmd = [self.parser._zip_command, 'e', str(archive_path), f'-i@{list_file_path}', f'-o{temp_dir}', '-y']
-                result = safe_subprocess_run(cmd, timeout=120)
-                
-                if result.returncode == 0:
-                    # Читаем содержимое всех извлеченных файлов
-                    for entry in file_entries:
-                        # Ищем извлеченный файл (7zip может изменить структуру папок)
-                        file_name = Path(entry.path).name
-                        extracted_files = list(temp_dir.rglob(file_name))
-                        
-                        for extracted_file in extracted_files:
-                            if extracted_file.is_file():
-                                try:
-                                    with open(extracted_file, 'rb') as f:
-                                        extracted_contents[entry.path] = f.read()
-                                    break
-                                except Exception as e:
-                                    print(f"⚠️ Ошибка чтения файла {entry.path}: {e}")
-                
-                return extracted_contents
-                
-            finally:
-                # Удаляем временный файл-список
-                try:
-                    Path(list_file_path).unlink()
-                except:
-                    pass
-            
-        except Exception as e:
-            print(f"⚠️ Ошибка батчевого извлечения: {e}")
-            return {}
-        finally:
-            safe_remove_dir(temp_dir)
+        """Извлекает пакет файлов из архива через zipfile."""
+        # Используем метод парсера для батчевого извлечения
+        filenames = [entry.path for entry in file_entries]
+        return self.parser.extract_batch_files(filenames)
     
     def _parse_single_file(self, entry: HBKEntry, hbk_file_path: Path) -> List[Documentation]:
         """Парсит один HTML файл и возвращает список документов."""
@@ -314,6 +269,8 @@ class StreamingIndexer:
             traceback.print_exc()
             return False
         finally:
+            # Закрываем архив
+            self.parser.close()
             print("🔌 Отключение от Elasticsearch...")
             await es_client.disconnect()
 

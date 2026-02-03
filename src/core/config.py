@@ -12,9 +12,6 @@ class ElasticsearchConfig(BaseModel):
     index_name: str = "help1c_docs"
     timeout: int = 30
     max_retries: int = 3
-    retry_min_wait: int = 2
-    retry_max_wait: int = 30
-    retry_multiplier: int = 1
 
 
 class ServerConfig(BaseModel):
@@ -35,15 +32,14 @@ class Settings(BaseSettings):
     """Основные настройки приложения."""
     
     # Elasticsearch настройки
+    # По умолчанию localhost для локальной разработки
+    # В Docker Compose переопределяется через environment на имя сервиса 'elasticsearch'
     elasticsearch_host: str = "localhost"
     elasticsearch_port: str = "9200"
-    elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_url: str = ""  # Будет сформирован из host и port
     elasticsearch_index: str = "help1c_docs"
     elasticsearch_timeout: int = 30
     elasticsearch_max_retries: str = "3"
-    elasticsearch_retry_min_wait: str = "2"
-    elasticsearch_retry_max_wait: str = "30"
-    elasticsearch_retry_multiplier: str = "1"
     
     # Сервер настройки
     server_host: str = "0.0.0.0"
@@ -77,16 +73,18 @@ class Settings(BaseSettings):
     def elasticsearch(self) -> ElasticsearchConfig:
         """Получить конфигурацию Elasticsearch."""
         # Формируем URL из host и port
-        es_url = f"http://{self.elasticsearch_host}:{self.elasticsearch_port}"
+        # Если elasticsearch_url задан явно - используем его
+        # Иначе формируем из host и port
+        if self.elasticsearch_url:
+            es_url = self.elasticsearch_url
+        else:
+            es_url = f"http://{self.elasticsearch_host}:{self.elasticsearch_port}"
         
         return ElasticsearchConfig(
             url=es_url,
             index_name=self.elasticsearch_index,
             timeout=self.elasticsearch_timeout,
-            max_retries=int(self.elasticsearch_max_retries),
-            retry_min_wait=int(self.elasticsearch_retry_min_wait),
-            retry_max_wait=int(self.elasticsearch_retry_max_wait),
-            retry_multiplier=int(self.elasticsearch_retry_multiplier)
+            max_retries=int(self.elasticsearch_max_retries)
         )
     
     @property

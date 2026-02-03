@@ -1,11 +1,8 @@
-FROM python:3.14-slim
+FROM python:3.11-slim
 
-# Установка системных зависимостей (включая компилятор для psutil)
+# Установка системных зависимостей
 RUN apt-get update && apt-get install -y \
     curl \
-    p7zip-full \
-    build-essential \
-    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Создание рабочей директории
@@ -29,7 +26,7 @@ ENV PYTHONUNBUFFERED=1
 # Открытие порта
 EXPOSE 8000
 
-# Health check
+# Health check - localhost внутри контейнера указывает на сам контейнер
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 

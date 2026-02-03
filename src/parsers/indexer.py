@@ -143,26 +143,30 @@ class ElasticsearchIndexer:
     async def reindex_all(
         self, 
         parsed_hbk: ParsedHBK,
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        clear_index: bool = True
     ) -> bool:
         """
-        Переиндексирует всю документацию (удаляет старый индекс и создает новый).
+        Переиндексирует всю документацию.
         
         Args:
             parsed_hbk: Распарсенные данные HBK
             progress_callback: Callback для отчёта о прогрессе (indexed, total)
+            clear_index: Если True - удаляет старый индекс и создает новый.
+                        Если False - добавляет документы к существующему индексу.
         
         Returns:
             bool: True если успешно, False иначе
         """
         try:            
-            # Удаляем старый индекс если существует
-            if await self.es_client.index_exists():
-                if self.es_client._client:
-                    await self.es_client._client.indices.delete(index=self.es_client._config.index_name)
-            
-            # Создаем новый индекс
-            await self.es_client.create_index()
+            if clear_index:
+                # Удаляем старый индекс если существует
+                if await self.es_client.index_exists():
+                    if self.es_client._client:
+                        await self.es_client._client.indices.delete(index=self.es_client._config.index_name)
+                
+                # Создаем новый индекс
+                await self.es_client.create_index()
             
             # Индексируем документы с прогрессом
             return await self.index_documentation(parsed_hbk, progress_callback)
